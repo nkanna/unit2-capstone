@@ -1,0 +1,13 @@
+# AWS SDK — Bedrock runtime for LLM calls
+boto3==1.43.108
+
+# Environment variable loading
+python-dotenv==1.2.4
+
+# Semantic retrieval
+chromadb==1.5.9
+sentence-transformers==6.1.0
+
+# Testing
+pytest>=8.0.0
+pytest-mock>=3.12.0

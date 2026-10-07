@@ -1,0 +1,35 @@
+# Secrets and environment
+.env
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# ChromaDB generated storage
+chroma_store/
+chroma_db/
+
+# SQLite (generated from ingest; keep committed if it is source data)
+# data/database.sqlite
+
+# Review archives
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
