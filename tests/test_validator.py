@@ -2,7 +2,7 @@
 Offline unit tests for validation/validator.py.
 
 All tests run without network access, without a database, and without
-calling Claude.  No assertions are fabricated — every test either passes
+calling the LLM.  No assertions are fabricated — every test either passes
 or the assertion error shows what actually happened.
 """
 

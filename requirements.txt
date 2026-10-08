@@ -1,5 +1,5 @@
-# AWS SDK — Bedrock runtime for LLM calls
-boto3==1.43.108
+# OpenAI Python SDK as client for the Google Gemini endpoint
+openai==2.54.0
 
 # Environment variable loading
 python-dotenv==1.2.4

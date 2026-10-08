@@ -5,7 +5,7 @@ import re
 
 def parse_json_object(text: str) -> dict:
     """
-    Parse a JSON object from a Bedrock response.
+    Parse a JSON object from a LLM response.
 
     Accepts:
     - Plain JSON: {"key": "value"}

@@ -1,4 +1,4 @@
-# Unit 2 Capstone: Multi-Agent RAG System with Claude
+# Unit 2 Capstone: Multi-Agent RAG System with Google Gemini
 
 A Python 3.11 CLI application that answers questions about company policies
 (qualitative) and business data (quantitative) using a multi-agent architecture.
@@ -6,56 +6,205 @@ All data is entirely fictional and created for educational purposes only.
 
 ---
 
-## Corrections
+## Gemini migration
 
-The following values were corrected from earlier drafts to match actual files:
+The existing Gold implementation uses Google Gemini for every application LLM
+call through `llm_client.invoke()`. The OpenAI Python SDK is only the client for
+Google's OpenAI-compatible endpoint; Google serves the model and receives requests.
+`bedrock_client.py` is a deprecated Gemini import shim with no AWS calls.
 
-- **Test count**: 165 total — test_manager.py (28), test_qualitative.py (9), test_quantitative.py (82), test_validator.py (34), test_parse_json.py (12).
-- **Department employee counts**: HR and Sales each corrected from earlier estimates to 8 active employees each, matching `SELECT COUNT(*) … GROUP BY department WHERE status='active'` on the actual seed database.
-- **Token totals**: 169,313 input / 43,503 output / $1.276532 across 56 query summaries, summed from the actual `tokenomics_log.jsonl`.
-- **Code-fence parsing failure**: Q2, Q3, and Q4 initial failures were caused by SQL generation responses arriving as JSON inside markdown code fences (` ```json\n{...}\n``` `). `json.loads()` cannot parse fenced input; `utils.parse_json_object()` was added to strip a single fence before parsing. The original failures are preserved in `evidence/live_calls.jsonl`.
-- **Trust-but-Verify examples**: built from saved evidence files (actual Bedrock responses). Removed a fabricated claim ("Stale review invalidation") that does not appear in `code_review_policy.md`. Example 3 replaced with the satisfaction follow-up query, including a confirmed human reviewer correction.
-- **Validation design**: corrected several descriptions to reflect fixes applied after earlier drafts (see Validation Design section).
-- **`.env.example`**: variable names corrected from `COST_PER_1K_*` to `COST_PER_M_*` to match what `tokenomics/logger.py` actually reads.
+Default: `gemini-3.6-flash`. Override with `GEMINI_MODEL`.
+HTTP 429, 503 and SDK timeout errors are retried with at most three total requests and
+backoff waits of 1 and 2 seconds. Two quota errors select the approved
+`gemini-3.5-flash-lite` fallback. A 503 retries the same selected model. SDK
+retries are disabled. Other API failures fail immediately
+with sanitized diagnostics. Request timeout is 90 seconds per attempt.
+
+The shared `temperature` argument is retained for existing callers but is not
+sent to Google: Gemini 3.6 Flash and 3.5 Flash-Lite ignore deprecated sampling
+parameters. See https://ai.google.dev/gemini-api/docs/generate-content/whats-new-gemini-3.6.
+
+System instructions and ordered user/assistant history are preserved. Gemini
+`stop` is normalized to `end_turn` and `length` to `max_tokens` for existing
+validators. `provider_finish_reason` always retains the original provider value.
+Safety blocks, missing content, missing finish reasons, and truncation are
+explicitly marked invalid; partial truncated text and returned usage are retained.
+Missing usage remains `null`, including affected query totals. Completion token
+counts are used as returned. The compatibility endpoint excludes thinking from
+completion tokens and includes it in total tokens. Thinking and billable output
+are derived from returned totals, labelled as derived, and counted once.
+
+Historical Bedrock logs remain byte-for-byte unchanged:
+`tokenomics_log.jsonl`, `evidence/live_calls.jsonl`,
+`evidence/query_results.jsonl`, and the two v2 JSONL files.
+They support the historical human-review examples below, not Gemini results.
+New accounting defaults to `tokenomics_gemini_log.jsonl`; new evidence goes to
+`evidence/gemini/`. All ten distinct questions now have successful results across
+the preserved ten-query batch and the separate two-query retry.
+See `MIGRATION_REPORT.md` for actual test results and changed files.
+
+## Verified Gemini results and Trust-but-Verify review
+
+Verified from the project author's saved Gemini evidence on 2026-10-08:
+
+| Check | Result |
+|---|---|
+| Offline suite on the author's Mac | **236 passed in 1.97s** |
+| Ten-query run `20261008T174810Z-cb8972bf` | **9/10 passed**; follow-up failed with HTTP 503 |
+| Isolated same-session pair `20261008T180319Z-0146155d` | **2/2 passed** |
+| Unique real questions completed successfully across both runs | **10** |
+| Captured SQL result sets checked against the committed SQLite data | **6/6 match** |
+| Citation IDs and excerpts checked against retrieved chunks and source policies | **16/16 match** |
+| Same-session history | Combined answer's `history_after` equals follow-up's `history_before`; the prior answer is present |
+| Successful model in both verified runs | `gemini-3.5-flash-lite` |
+
+The ten-question run includes supported policy, quantitative and combined
+questions, plus legitimate refusals for unsupported policy and destructive
+requests. It was not a single 10/10 run: the follow-up succeeded in a separately
+saved two-query retry using one Manager instance. All earlier errors remain
+visible. The simple `gemini-3.6-flash` smoke also succeeded, but the complete
+agent evidence uses the instructor-approved Flash-Lite model.
+
+### Verified token accounting
+
+Totals below cover returned responses from these two runs only. They exclude
+the separate smoke and earlier failed batches. Failed API attempts have unknown
+usage and are preserved without manufactured token counts or actual charges.
+
+| Run | Returned responses | Input | Answer | Derived thinking | Provider total | Hypothetical paid estimate |
+|---|---:|---:|---:|---:|---:|---:|
+| Ten questions, including the failed follow-up | 23 | 21,312 | 3,545 | 0 | 24,857 | $0.01525610 |
+| Successful combined + follow-up pair | 10 | 6,718 | 1,407 | 0 | 8,125 | $0.00553290 |
+| Combined returned-response totals | 33 | 28,030 | 4,952 | 0 | 32,982 | $0.02078900 |
+
+All 33 returned calls ended with provider `stop` and passed their automated
+validation. The first run contains one additional API-failure outcome after
+three 503 attempts, with no returned usage and no fabricated paid cost. It has
+nine query summaries because that follow-up failed before any returned call;
+the successful pair has two summaries. Each summary reconciles to its call
+records. Billing tier remains `unknown`; these paid estimates are hypothetical,
+and conditional free-tier estimates are not proof of an actual charge.
+
+### Human-review provenance
+
+The project author previously confirmed these decisions: accept PR requirements
+once checked against policy; accept regional revenue after independent arithmetic;
+accept the Sales score but clarify policy applicability. The same confirmed
+review standard is applied below to the newly verified Gemini outputs. Raw model
+answers and evidence are preserved; the human clarification is separate.
+
+### Gemini review 1 — PR approval requirements
+
+**Query**: What are the requirements for PR approval in the code review policy?
+
+**Evidence**: `evidence/gemini/runs/20261008T174810Z-cb8972bf/query_results.jsonl`, `3d639d25b86f`.
+
+**Raw Gemini output (verbatim)**:
+
+> According to the code review policy, the requirements for PR approval are:
+> - Every PR must have at least two approvals before merging to main or a release branch.
+> - At least one reviewer must be a domain owner (maintainer of the affected subsystem).
+> - PRs touching security-critical code (auth, payments, cryptography, secrets handling) require an additional approval from a member of the Security Review Board.
+> - The author may not approve their own PR.
+> - Reviews from automated bots do not count toward the human-reviewer minimum.
+
+**Validation and independent check**: valid=True, no errors or warnings.
+All five approval rules match `data/documents/code_review_policy.md`. This
+Gemini answer has **five citations**, all to `code_review_policy.md::chunk_2`;
+the chunk IDs and verbatim excerpts match the captured retrieved context and
+source document.
+
+**Decision carried forward from the author's confirmed review**: ACCEPT.
+The claims satisfy the same policy checks as the historical example.
+
+### Gemini review 2 — Regional revenue
+
+**Query**: What is the total revenue by region for 2024?
+
+**Evidence**: `evidence/gemini/runs/20261008T174810Z-cb8972bf/query_results.jsonl`, `5b69165e7815`.
+
+**Raw Gemini output (verbatim)**:
+
+> In 2024, the West region generated the highest revenue at 501,967.15 USD, followed by EMEA with 440,725.04 USD. East generated 293,775.07 USD, North generated 286,255.82 USD, and South generated the lowest revenue at 190,605.30 USD.
+
+**Generated SQL**:
+
+```sql
+SELECT region, ROUND(SUM(amount), 2) AS revenue FROM sales WHERE strftime('%Y', sale_date) = '2024' GROUP BY region
+```
+
+**Validation and independent check**: valid=True, no errors or warnings.
+The saved SQL returns the exact five saved region rows in the committed SQLite
+database. Independent arithmetic gives
+501,967.15 + 440,725.04 + 293,775.07 + 286,255.82 + 190,605.30
+= **$1,713,328.38**. This total is a reviewer cross-check, not an added claim in
+the raw Gemini answer.
+
+**Decision carried forward from the author's confirmed review**: ACCEPT after
+independent database and arithmetic verification. The original failed SQL
+response is retained in `evidence/gemini/live_calls.jsonl`; its provider finish
+reason is `length`, normalized to `max_tokens`, confirming truncation in that
+Gemini run. This is separate from the historical Bedrock code-fence failure.
+
+### Gemini review 3 — Satisfaction follow-up: clarify applicability
+
+**Query**: Which department scored lowest, and what does the policy recommend for managers in that department?
+
+**Evidence**: `evidence/gemini/runs/20261008T180319Z-0146155d/query_results.jsonl`, `5921b452e84f`. The preceding combined answer is `6c5d5783f718` in the same file.
+
+**Raw Gemini output (verbatim)**:
+
+> The data shows that the department with the lowest average employee satisfaction score is Sales. According to company policy, managers whose teams score below the 25th percentile for two consecutive quarters must complete a People Manager Coaching programme consisting of six sessions over twelve weeks.
+
+**Generated follow-up SQL**:
+
+```sql
+SELECT department FROM employees WHERE status = 'active' GROUP BY department ORDER BY AVG(satisfaction_score) ASC LIMIT 1
+```
+
+**Validation and independent check**: valid=True, no errors or warnings.
+The follow-up SQL returns `Sales`; the preceding combined query and independent
+SQL verification establish its average score as **6.53**, the lowest among
+active employees' departments. The follow-up includes the prior combined answer
+in the same Manager session. Its coaching-rule citation matches HR-005.
+
+**Decision carried forward from the author's confirmed review**: ACCEPT the
+ranking and score; CLARIFY the interpretation. The raw output states a true
+conditional rule, but it does not establish that Sales meets that rule. A single
+average does not prove two consecutive quarters below a specified percentile,
+manager-effectiveness results, or an eNPS threshold.
+
+**Human clarification (separate from raw Gemini output)**:
+
+> Sales has the lowest average satisfaction score among active employees, 6.53.
+> Under HR-005, the department head should review survey results with their HR
+> Business Partner and document at least two actions with owners and dates.
+> The available data cannot establish whether Sales meets the two-quarter,
+> below-25th-percentile coaching threshold or any eNPS escalation threshold.
+> Coaching remains conditional on those additional facts.
+
+This example shows the limit of automated checks: verified SQL values and
+source citations do not determine whether a conditional policy applies.
+Some captured policy excerpts begin mid-word because the retrieved chunk begins
+mid-word. Those fragments pass substring checks, but human readers should consult
+the complete policy for full context.
 
 ---
 
 ## Architecture
 
-```
-                              ┌─────────────────┐
-                              │  Validator       │
-                              │  (all responses) │
-                              └────────┬────────┘
-                                       │ validates every Claude call
-┌──────┐   ┌──────────┐   ┌──────────▼───────────────────────────┐
-│ User │──▶│ main.py  │──▶│              Manager                  │
-│ CLI  │◀──│          │◀──│  classify → route → synthesize        │
-└──────┘   └──────────┘   └──────┬────────────────────┬──────────┘
-                                  │                    │
-               ┌──────────────────▼──┐     ┌──────────▼──────────────┐
-               │  QualitativeAgent   │     │  QuantitativeAgent      │
-               │  ChromaDB retrieval │     │  SQL generation          │
-               │  + Claude generation│     │  + SQLite execution      │
-               └──────────┬──────────┘     └──────────┬──────────────┘
-                          │                           │
-               ┌──────────▼──────────┐     ┌──────────▼──────────────┐
-               │     ChromaDB        │     │   SQLite (read-only)    │
-               │  (cosine, 39 chunks)│     │   customers/sales/emps  │
-               └─────────────────────┘     └─────────────────────────┘
-                          │                           │
-                          └───────────┬───────────────┘
-                                      │
-                         ┌────────────▼────────────┐
-                         │   AWS Bedrock            │
-                         │   us.anthropic.claude-   │
-                         │   sonnet-4-6             │
-                         └─────────────────────────┘
-                                      │
-                         ┌────────────▼────────────┐
-                         │   TokenomicsLogger       │
-                         │   tokenomics_log.jsonl   │
-                         └─────────────────────────┘
+```mermaid
+flowchart TD
+    U[CLI and conversation history] --> M[Manager]
+    M --> Q[Qualitative agent]
+    M --> N[Quantitative agent]
+    Q --> C[ChromaDB and Sentence-Transformers]
+    N --> D[Read-only SQLite and SQL safety]
+    M --> L[Shared Gemini client]
+    Q --> L
+    N --> L
+    L --> V[JSON, citation and numeric validation]
+    V --> T[Gemini tokenomics]
 ```
 
 ---
@@ -87,55 +236,72 @@ Seed script: `data/seed_database.py` (fixed random seed 42, idempotent)
 
 ---
 
-## AWS Bedrock Setup
+## Gemini Setup and Quick Start
 
-This project uses AWS Bedrock instead of a direct Anthropic API key.
-
-- **Model**: `us.anthropic.claude-sonnet-4-6`
-- **Region**: `us-east-1`
-
-Configure credentials with:
-```bash
-aws configure
-```
-
-Or set environment variables `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-`AWS_DEFAULT_REGION`. Never paste credentials into project files.
-
-See `.env.example` for all supported environment variables. Copy it to `.env`
-(already excluded from git by `.gitignore`).
-
----
-
-## Quick Start (Fresh Clone)
-
-Complete setup from a fresh clone:
+Python 3.11 or newer. Use a Gemini API key from Google AI Studio.
+Google compatibility documentation:
+https://ai.google.dev/gemini-api/docs/openai
 
 ```bash
-# 1. Create virtual environment
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
-
-# 2. Install dependencies
 pip install -r requirements.txt
-
-# 3. Configure AWS Bedrock (no credentials in this repo)
-aws configure                  # or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION
-
-# 4. Copy and review environment variables (optional overrides)
 cp .env.example .env
+```
 
-# 5. Seed the SQLite database
+Edit `.env` locally. Replace `GEMINI_API_KEY` with your key and `GEMINI_MODEL`
+with `gemini-3.6-flash`, or leave the model blank for that default. Never paste
+credentials into chat, logs, documentation, or commits. `.env.example` contains
+placeholders only and `.env` is gitignored.
+
+Optional `GEMINI_BILLING_TIER`: `free`, `paid`, or `unknown` (default).
+Only set `free` after checking your API project's actual billing tier.
+Optional `GEMINI_TOKENOMICS_LOG` selects a new Gemini log file. Historical
+Bedrock log paths are rejected; old `TOKENOMICS_LOG` and Claude rate overrides
+are ignored.
+
+Run the offline tests, then one smoke query:
+
+```bash
+pytest tests/ -q
+python smoke_test.py
+```
+
+After the smoke, capture the full application evidence:
+
+```bash
+python evidence/run_live_checks.py
+```
+
+When selecting the instructor-approved Flash-Lite model explicitly for a run:
+
+```bash
+GEMINI_MODEL=gemini-3.5-flash-lite python evidence/run_live_checks.py
+```
+
+To retry only the combined question and follow-up, keeping the original run:
+
+```bash
+GEMINI_MODEL=gemini-3.5-flash-lite python evidence/run_live_checks.py --followup-pair
+```
+
+The pair uses one Manager instance. If its combined query does not pass, the
+follow-up is skipped and recorded as a failure rather than tested without the
+required context. Each run has an independent ledger under
+`evidence/gemini/runs/<run-id>/`.
+Generation budgets are 4096 tokens for classification/SQL and 8192 for policy
+answers, interpretation and synthesis, because Gemini's limit includes thinking
+plus answer tokens. Truncated output still fails validation before SQL execution.
+
+The smoke test passes only with nonempty complete text and actual usage metadata.
+It writes honest success/failure evidence to `evidence/gemini/smoke_test.jsonl`.
+Missing credentials produce a failure without sending an API request.
+For normal application use after the migration review:
+
+```bash
 python data/seed_database.py
-
-# 6. Build Chroma vector storage (chroma_store/ is gitignored — must rebuild after clone)
 python ingest.py --reset
-
-# 7. Run the CLI
 python main.py
-
-# 8. Run tests (all offline — no AWS calls required)
-pytest tests/ -v
 ```
 
 ---
@@ -199,12 +365,14 @@ python main.py "What is the password policy?"
 pytest tests/ -v
 ```
 
-165 tests, all offline (no Bedrock or ChromaDB calls required):
-- `test_validator.py` — 34 tests (SQL validation, qualitative response validation, excerpt matching)
-- `test_qualitative.py` — 9 tests (retrieval pre-filter, citation validation, retries)
-- `test_quantitative.py` — 82 tests (SQL safety, structured numeric claims, destructive intent, prose bypass)
-- `test_manager.py` — 28 tests (routing, history, synthesis grounding, refusal propagation, error handling)
-- `test_parse_json.py` — 12 tests (code-fence stripping, plain JSON, rejection cases using actual evidence payloads)
+The complete suite is offline and uses mocked provider responses, a fake SDK
+HTTP transport, and temporary/in-memory databases. It covers the existing
+routing, history, SQL safety, JSON parsing, citation and numeric validations,
+plus Gemini client response mapping, API failures, quota fallback, pricing,
+missing usage and per-query totals. Actual counts are in `MIGRATION_REPORT.md`.
+The corrected suite has **236 passing tests**. The qualitative tests include
+the real tokenomics logger for successful answers and retries, so logger
+interface errors are tested without live credentials or retrieval downloads.
 
 ---
 
@@ -259,17 +427,16 @@ earlier answers.
 - Type `reset` in the CLI to clear history.
 - History contains only validated, non-refused answers. Failed responses
   (classification errors, unsupported queries) are not added.
-- When a SQL generation response arrives as a JSON code-fenced block
-  (` ```json\n{...}\n``` `), `utils.parse_json_object()` strips the fence
-  before parsing. Earlier evidence runs showed this as a parsing failure;
-  it is now corrected. Type `reset` to clear session history between
-  independent questions.
+- When a query fails mid-session (e.g. SQL generation error), the failed
+  exchange is not stored in history but does not automatically clean up
+  intermediate message context from the current session. Type `reset` to
+  start a fresh session if you encounter repeated SQL generation failures.
 
 ---
 
 ## Validation Design
 
-Every Claude response is validated before use. Validation failures trigger
+Every LLM response is validated before use. Validation failures trigger
 a retry (up to 2 total calls per step); if retries are exhausted the query
 is refused rather than returning an unvalidated answer.
 
@@ -342,42 +509,71 @@ will pass this check.
 ### Destructive intent pre-filter
 Before any SQL generation, `DESTRUCTIVE_INTENT_RE` checks for keywords like
 `delete`, `drop`, `truncate`, `update all`. Matched queries are refused
-immediately without calling Bedrock or touching the database.
+immediately without calling Gemini or touching the database.
 
 ---
 
 ## Tokenomics
 
-- **Input cost**: $3.30 per million tokens (us-east-1, us.anthropic.claude-sonnet-4-6)
-- **Output cost**: $16.50 per million tokens
-- **Log**: `tokenomics_log.jsonl` — two record types:
-  - `"call"`: one entry per individual Bedrock call
-  - `"query_summary"`: one entry per user turn (totals, no double-counting)
+Google Gemini Developer API **Standard** pricing verified on 2026-10-08:
+https://ai.google.dev/gemini-api/docs/pricing
 
-**Measured totals across 56 query summaries in this project:**
-- Total input tokens: 169,313
-- Total output tokens: 43,503
-- Total estimated cost: $1.276532
+| Model | Paid input / 1M tokens | Paid output / 1M tokens | Paid cached input / 1M tokens |
+|---|---:|---:|---:|
+| `gemini-3.6-flash` through 2026-12-31 | $0.75 | $3.75 | $0.075 |
+| `gemini-3.6-flash` starting 2027-01-01 | $1.50 | $7.50 | $0.15 |
+| `gemini-3.5-flash-lite` | $0.30 | $2.50 | $0.03 |
+
+Free-tier input/output charges are estimated at $0 only conditional on actual
+free-tier eligibility and quotas. `free_tier_estimated_cost_usd` is separate
+from `hypothetical_paid_tier_cost_usd`. `estimated_cost_usd` follows the explicitly
+configured billing tier, and remains `null` for unknown tier. None of these
+fields is an actual billing statement. Unknown model rates remain unknown.
+The compatibility endpoint reports answer tokens in `completion_tokens` and
+includes thinking in `total_tokens`. For these text-only calls with no tools:
+`thinking_tokens = total_tokens - input_tokens - output_tokens` and
+`billable_output_tokens = total_tokens - input_tokens`. These fields are labelled
+`derived_from_provider_totals`; the original provider counts and metadata remain
+unchanged. Paid estimates price billable output once, including thinking.
+Missing or inconsistent totals produce unknown thinking/output accounting and
+an unknown paid estimate. Query summaries keep answer, thinking, billable output,
+and provider total counts separate.
+Reference: https://discuss.ai.google.dev/t/gemini-3-6-flash-openai-compatible-token-limits-response-fields-and-auth-keys/183372.
+
+Cached token details are honored when supplied; estimates exclude grounding,
+cache storage and other services that this application does not request.
+
+`tokenomics_gemini_log.jsonl` records one `call` per returned provider response
+(including validation retries) and one `query_summary` per user query. Actual
+input, completion and total tokens, original finish reason, model, full returned
+usage, validation result, and quota attempt statuses are recorded. HTTP failures
+without returned usage are not assigned token counts. Failed smoke attempts are
+recorded separately in Gemini evidence. Unknown usage propagates to totals;
+never sum both call records and query summaries together.
+
+Historical Bedrock totals remain solely in `tokenomics_log.jsonl`. They are
+not Gemini usage or proof of completing ten Gemini queries. The current Gemini evidence is recorded in the verified-results section;
+historical and current totals remain separate.
 
 ---
 
 ## Requirement Checklist
 
-### Bronze
+### Bronze (existing implementation; historical evidence)
 
 | # | Requirement | Status | Evidence |
 |---|------------|--------|---------|
 | B1 | `ingest.py` chunks, embeds, stores in ChromaDB | ✓ | `ingest.py`: `chunk_text()`, `load_documents()`, `_sync_collection()` |
 | B2 | Manager supports qualitative, quantitative, combined | ✓ | `agents/manager.py:169` `Manager.answer()`, routes qualitative/quantitative/both/unsupported |
 | B3 | Qualitative: grounded answers, citations, refusal when unavailable | ✓ | `agents/qualitative.py`: RETRIEVAL_THRESHOLD pre-filter, citation validation, refused=True on miss |
-| B4 | Quantitative agent generates SQL through Claude | ✓ | `agents/quantitative.py:273` SQL_GENERATION_SYSTEM prompt, `bc.invoke()` call |
+| B4 | Quantitative agent generates SQL through Gemini | ✓ | `agents/quantitative.py:273` SQL_GENERATION_SYSTEM prompt, `lc.invoke()` call |
 | B5 | `validate_sql` blocks non-SELECT and unsafe queries | ✓ | `validation/validator.py:186` three-layer validation; 13 SQL tests in `test_validator.py` |
-| B6 | Every Claude response passes through validation | ✓ | manager.py:204, quantitative.py:297-418, qualitative.py: all `bc.invoke` calls followed by validator |
-| B7 | Tokenomics logs actual tokens and estimated cost | ✓ | `tokenomics/logger.py`: `log_call()`, `log_query_summary()`; `tokenomics_log.jsonl` |
+| B6 | Every LLM response passes through validation | ✓ | manager.py:204, quantitative.py:297-418, qualitative.py: all `lc.invoke` calls followed by validator |
+| B7 | Tokenomics logs actual tokens and estimated cost | ✓ | `tokenomics/logger.py`: `log_call()`, `log_query_summary()`; new `tokenomics_gemini_log.jsonl` |
 | B8 | `main.py` provides interactive CLI | ✓ | `main.py`: interactive loop, exit/quit/reset, single-query mode |
 | B9 | README with architecture, setup, usage | ✓ | This document |
-| B10 | README has Trust-but-Verify section (3 real examples) | ✓ | See Trust-but-Verify section below |
-| B11 | `tokenomics_log.jsonl` with ≥10 real user queries | ✓ | 56 `query_summary` records (47 full-application runs through Manager; 9 earlier direct-agent checks from Stages 1–4) |
+| B10 | README has Trust-but-Verify section (3 real examples) | Verified | Three current Gemini examples with source checks and separate clarification; historical examples retained |
+| B11 | At least 10 real Gemini user queries | Verified across runs | Ten distinct questions successfully completed across the ten-query batch and two-query retry; original 9/10 and successful 2/2 statuses preserved |
 
 ### Silver
 
@@ -385,19 +581,22 @@ immediately without calling Bedrock or touching the database.
 |------------|--------|---------|
 | Conversation history for follow-up questions | ✓ | `agents/manager.py:45` `SessionHistory`, `MAX_HISTORY_TURNS=10`, `to_messages()` passed to agents |
 
-### Gold
+### Gold (offline behavior retained)
 
 | Requirement | Status | Evidence |
 |------------|--------|---------|
-| Meaningful unit tests for manager, qualitative, quantitative, validator | ✓ | 165 tests in `tests/`: test_manager.py (28), test_qualitative.py (9), test_quantitative.py (82), test_validator.py (34), test_parse_json.py (12) |
+| Meaningful unit tests for manager, qualitative, quantitative, validator | ✓ | Existing regression suite plus Gemini client/accounting tests; see migration report |
 
 ---
 
-## Trust-but-Verify
+## Trust-but-Verify (historical Bedrock examples)
 
-The following examples are built from saved evidence files — actual Bedrock
-responses captured during live runs. Raw outputs are copied verbatim from the
-evidence files. Reviewer corrections are shown separately and clearly labelled.
+The following examples are built from `evidence/query_results.jsonl` — actual
+saved Bedrock responses captured during live runs. The satisfaction follow-up
+uses `evidence/run_live_checks_v2/query_results_v2.jsonl`. Quoted excerpts and
+summaries are labelled; the raw evidence is unchanged. Human review decisions
+for PR approvals, regional revenue, and the satisfaction follow-up were
+confirmed by the project author. Human corrections are shown separately.
 
 ---
 
@@ -408,7 +607,7 @@ evidence files. Reviewer corrections are shown separately and clearly labelled.
 **Route**: qualitative
 **Refused**: no
 
-**Output** (actual, from `evidence/query_results.jsonl`):
+**Output** (excerpt of actual answer from `evidence/query_results.jsonl`):
 > According to the code review policy (ENG-002), the requirements for PR approval are as follows:
 >
 > 1. **Minimum Approvals:** Every PR must have at least two approvals before merging to main or a release branch.
@@ -431,8 +630,8 @@ evidence files. Reviewer corrections are shown separately and clearly labelled.
 **Validation outcome**: valid=True, errors=[], warnings=[]
 Tokens: 3,046 in / 1,414 out | Cost: $0.033383
 
-**Review decision** (confirmed by project author): ACCEPT
-**Rationale**: All five approval-requirement claims match the actual policy rules in `code_review_policy.md` (verified against source). All six excerpts are verbatim quotes confirmed present in their retrieved chunks (substring check passed). No numeric claims. No interpretation layer.
+**Review decision (confirmed by project author)**: ACCEPT
+**Rationale**: All five approval-requirement claims match the actual policy rules verifiable in `code_review_policy.md`. All six excerpts are verbatim quotes confirmed present in their retrieved chunks (substring check passed). No numeric claims. No interpretation layer.
 
 ---
 
@@ -443,7 +642,7 @@ Tokens: 3,046 in / 1,414 out | Cost: $0.033383
 **Route**: quantitative
 **Refused**: no
 
-**Output** (actual):
+**Output** (summary of actual answer; raw output retained in `evidence/query_results.jsonl`, label `Q2_quantitative_retry`):
 > In 2024, total revenue across all regions amounted to approximately $1,713,328.38. The West region led all regions with roughly $501,967.15 in revenue, followed closely by EMEA at about $440,725.04. The East and North regions contributed similarly, at approximately $293,775.07 and $286,255.82 respectively. The South region generated the least revenue at around $190,605.30.
 
 **Evidence**:
@@ -454,41 +653,62 @@ Tokens: 3,046 in / 1,414 out | Cost: $0.033383
 **Validation outcome**: valid=True, errors=[], warnings=[]
 Tokens: 2,404 in / 743 out | Cost: $0.025195
 
-**Review decision** (confirmed by project author): ACCEPT
-**Rationale**: All five regional revenue figures independently verified: 501,967.15 + 440,725.04 + 293,775.07 + 286,255.82 + 190,605.30 = 1,713,328.38 ✓. Each figure validated by the system via `numeric_claims`; total via `SUM(total_revenue)` derived claim. Result saved in `evidence/query_results.jsonl` (label `Q2_quantitative_retry`). Initial run (query_id `5cd4a742affb`) failed because the SQL generation response arrived as a JSON code-fenced block that `json.loads()` could not parse; original failure preserved in `evidence/live_calls.jsonl`.
+**Review decision (confirmed by project author)**: ACCEPT
+**Rationale**: All five regional revenue figures match result rows directly via `numeric_claims`. The total $1,713,328.38 is verified as `SUM(total_revenue)` derived claim: 501,967.15 + 440,725.04 + 293,775.07 + 286,255.82 + 190,605.30 = 1,713,328.38. Note: initial run (query_id `5cd4a742affb`) failed because the SQL generation response arrived as a JSON code-fenced block (` ```json\n{...}\n``` `) that `json.loads()` could not parse. This was fixed by `utils.parse_json_object()`, which strips a single code fence before parsing. The original failure is preserved in `evidence/live_calls.jsonl`; this result is `Q2_quantitative_retry` in `evidence/query_results.jsonl`.
 
 ---
 
-### Trust-but-Verify Example 3 — Follow-up Requiring Reviewer Correction
+### Trust-but-Verify Example 3 — Satisfaction Follow-up: Human Correction
 
 **Query**: "Which department scored lowest, and what does the policy recommend for managers in that department?"
 **Query ID**: `f1dde295e3d5`
-**Route**: both (follow-up in same Manager session as Example 3a below)
-**Refused**: no
-**Source**: `evidence/run_live_checks_v2/query_results_v2.jsonl`
+**Evidence**: `evidence/run_live_checks_v2/query_results_v2.jsonl`, label `Q2_followup`.
+**Route**: both; follow-up in the same Manager session.
 
-**Raw output** (actual, verbatim from evidence):
+**Output (raw historical answer, verbatim)**:
 > The data shows that the Sales department has the lowest average employee satisfaction score at 6.53, making it the department most in need of attention. According to company policy (HR-005), managers in low-scoring departments face direct consequences and required actions: their effectiveness scores from direct reports are factored into their own performance reviews, meaning the low satisfaction scores will impact Sales managers' evaluations directly. According to company policy, if the department's eNPS falls in the 'Watch' range (0 to +19), a CPO-led review is triggered and a targeted action plan must be completed within 30 days; if eNPS falls below 0 ('Critical'), an executive-level response is required. Note that the full policy text was not entirely retrievable — there may be additional recommendations such as coaching programmes or further action-planning requirements that are not captured here, and a full reading of HR-005 is recommended for a complete picture.
 
 **Evidence**:
-- Citations: `employee_satisfaction_policy.md::chunk_3` (effectiveness scores in performance reviews), `employee_satisfaction_policy.md::chunk_6` (eNPS Watch/Critical thresholds), all substring-verified
 - SQL: `SELECT department, ROUND(AVG(satisfaction_score), 2) AS avg_satisfaction FROM employees WHERE status = 'active' GROUP BY department ORDER BY avg_satisfaction ASC LIMIT 1`
 - Result rows: `[{"department": "Sales", "avg_satisfaction": 6.53}]`
+- Validation: valid=True, errors=[], warnings=[].
+- Automated checks confirmed numeric consistency; they did not establish the meaning of the survey metric or the policy consequences.
+
+**Review decision (confirmed by project author)**: ACCEPT the Sales score; CHANGE the interpretation.
+
+**Human correction (separate from raw output)**:
+> Sales has the lowest average satisfaction score, 6.53. Managers should review feedback with HR and document actions. The available data cannot establish whether the policy's eNPS or two-quarter coaching thresholds apply.
+
+**Rationale**: A 1–10 satisfaction average cannot establish eNPS on a −100 to +100 scale, managers' direct-report effectiveness scores, or a two-consecutive-quarter threshold. The raw answer incorrectly says that the satisfaction scores will directly affect managers' evaluations. Conditional eNPS rules do not establish that this department meets them. The source data supports the score and ranking, while additional survey and time-period data would be needed to apply those policy thresholds.
+
+---
+
+### Additional Historical Example — Destructive Request Correctly Refused
+
+**Query**: "Please delete all sales records from the database"
+**Query ID**: `4901676cfb24`
+**Route**: unsupported
+**Refused**: yes
+
+**Output** (actual):
+> I can only answer questions about company policies/procedures or business data (customers, sales, employees). Your question appears to be outside that scope.
+
+**Evidence**:
+- Citations: none
+- SQL: none generated
+- Database: unchanged — no agent was called; the Manager classifier returned `route="unsupported"` and the request was refused immediately
 
 **Validation outcome**: valid=True, errors=[], warnings=[]
-Tokens: 5,586 in / 1,216 out | Cost: $0.038498
+Tokens: 743 in / 77 out | Cost: $0.003722
 
-**Human reviewer correction** (confirmed by project author):
-> The Sales score of 6.53 is correct and sourced from the database. However, the eNPS passages in the answer are misapplied: the department satisfaction score (1–10 scale) is a different metric from eNPS (−100 to +100), which is computed from a separate survey question not represented in this dataset. The model cannot infer eNPS status from an average satisfaction score. Additionally, the two-quarter coaching trigger requires two consecutive quarters below the 25th percentile — that cannot be determined from a single-period average. The correct summary: Sales has the lowest current satisfaction score (6.53); managers should review recent survey feedback with HR and document actions. Whether the eNPS thresholds or the coaching programme have been triggered cannot be determined from the available data alone.
-
-**Review decision** (confirmed by project author): ACCEPT with reviewer correction applied
-**Rationale**: The SQL result and Sales score of 6.53 are verified. The eNPS and coaching-trigger claims are grounded in citation substrings that passed the excerpt check — the validation system correctly confirmed the text appeared in the policy — but the model drew an inference that the policy text does not support in this context. This is an example of the documented limitation: excerpt substring matching confirms text was retrieved, not that every claim derived from it is correct. The reviewer correction provides the accurate interpretation.
+**Automated finding**: Correct refusal (additional historical evidence).
+**Rationale**: The Manager classifier identified the query as out-of-scope (`route="unsupported"`) before routing to any agent. Neither `QualitativeAgent` nor `QuantitativeAgent` was invoked, and no SQL was generated. The `DESTRUCTIVE_INTENT_RE` pre-filter in `QuantitativeAgent` would provide a second guard if the classifier ever mis-routes such a query as `"quantitative"`, but it was not reached in this run. The polite-form phrasing ("Please delete…") did not bypass the classifier's scope check.
 
 ---
 
 ## Submission Evidence
 
-`evidence/run_live_checks.py` — script that captures 6 live queries through the full application stack.
+`evidence/run_live_checks.py` — current script that captures 10 unique live queries through the full application stack, including a combined answer and same-session follow-up. Each invocation saves a new directory under `evidence/gemini/runs/`, including raw call outcomes, query results, and a dedicated tokenomics ledger. Results are checkpointed after each query; partial calls and sanitized API failures are retained. Failed in-scope queries do not count as passes.
 `evidence/live_calls.jsonl` — 29 Bedrock call records from the original run (pre-fix): raw response text, stop_reason, tokens, cost. Includes the fenced SQL responses that exposed the code-fence parsing bug.
 `evidence/query_results.jsonl` — 8 query result records from the original run.
 
@@ -496,6 +716,6 @@ Tokens: 5,586 in / 1,216 out | Cost: $0.038498
 `evidence/run_live_checks_v2/live_calls_v2.jsonl` — 12 Bedrock call records from the post-fix run.
 `evidence/run_live_checks_v2/query_results_v2.jsonl` — 2 query result records (Q1_both, Q2_followup); both pass validation.
 
-Run `python evidence/run_live_checks.py` or `python evidence/run_live_checks_v2/run.py` to reproduce (requires AWS Bedrock credentials configured via `aws configure` or environment variables).
+The runners target Gemini and separate output files under `evidence/gemini/`. The author ran an initial six-query Gemini batch: policy, combined and follow-up queries hit HTTP 503; regional-revenue SQL contained malformed JSON; the unsupported-policy and destructive-request refusals passed. Those saved files on the author's Mac remain separate from historical Bedrock evidence. The ten-query runner passed 9/10; the separate follow-up pair passed 2/2. All ten distinct questions have successful results across those runs. It does not reproduce historical Claude outputs verbatim.
 
-*All data is entirely fictional. All outputs in this README are from real Bedrock API calls copied verbatim from saved evidence files.*
+*All data is entirely fictional. Historical model answers come from saved Bedrock API evidence; excerpts, summaries and human corrections are labelled separately. Successful Gemini evidence is documented separately in the verified-results section.*

@@ -20,7 +20,7 @@ from utils import parse_json_object
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import bedrock_client as bc
+import llm_client as lc
 from agents.qualitative import QualitativeAgent, QualitativeResult
 from agents.quantitative import QuantitativeAgent, QuantitativeResult
 from tokenomics.logger import CallRecord, log_call, log_query_summary, new_query_id
@@ -49,7 +49,7 @@ class SessionHistory:
     Bounded ring-buffer of conversation turns.
 
     to_messages() returns a flat list of {role, content} dicts suitable for
-    the Bedrock Messages API.  History is passed as context to agents but
+    the Gemini chat completions API.  History is passed as context to agents but
     prior assistant answers are NOT treated as ground truth — each turn
     re-retrieves fresh evidence.
     """
@@ -181,10 +181,10 @@ class Manager:
 
         # ── Step 1: Classify ─────────────────────────────────────────────────
         class_messages = history_msgs + [{"role": "user", "content": query}]
-        class_resp = bc.invoke(
+        class_resp = lc.invoke(
             messages=class_messages,
             system=CLASSIFICATION_SYSTEM,
-            max_tokens=512,
+            max_tokens=4096,  # Gemini budget includes thinking and answer tokens
             temperature=0.0,
         )
 
@@ -381,10 +381,10 @@ class Manager:
 
         last_synth_val = ValidationResult(valid=False, errors=["No synthesis attempt"])
         for attempt in range(self._MAX_SYNTHESIS_RETRIES):
-            synth_resp = bc.invoke(
+            synth_resp = lc.invoke(
                 messages=[{"role": "user", "content": synth_user}],
                 system=SYNTHESIS_SYSTEM,
-                max_tokens=1024,
+                max_tokens=8192,  # preserve room for JSON after thinking
                 temperature=0.0,
             )
 

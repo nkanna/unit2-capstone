@@ -1,5 +1,5 @@
 """
-Validation layer for all Claude responses.
+Validation layer for all the LLM responses.
 
 Validators return ValidationResult — a simple pass/fail with
 structured error and warning lists so callers can decide how to respond.
@@ -8,7 +8,7 @@ validate_qualitative_response       JSON shape, citation IDs, stop_reason.
 validate_sql                        Blocks writes, multi-statement, unsafe
                                     patterns, unknown tables/columns via both
                                     regex pre-filter and SQLite authorizer.
-validate_sql_generation_response    Structure of the SQL-generation JSON from Claude.
+validate_sql_generation_response    Structure of the SQL-generation JSON from the LLM.
 validate_quantitative_interpretation
                                     Structure of the interpretation JSON, plus
                                     a numeric consistency check against the
@@ -277,11 +277,11 @@ def validate_qualitative_response(
 
     Parameters
     ----------
-    payload       : parsed dict from Claude's JSON output
+    payload       : parsed dict from the LLM's JSON output
     retrieved_ids : set of chunk IDs that were actually retrieved and sent
-                    to Claude; citations referencing anything outside this
+                    to the LLM; citations referencing anything outside this
                     set are fabricated
-    stop_reason   : value from BedrockResponse.stop_reason
+    stop_reason   : value from LLMResponse.stop_reason
     chunk_texts   : optional dict mapping chunk_id → raw chunk text.
                     When provided, each citation's excerpt is checked as a
                     case-insensitive substring of its chunk's text after
@@ -379,7 +379,7 @@ def validate_sql_generation_response(
     payload: dict,
     stop_reason: str,
 ) -> ValidationResult:
-    """Validate the JSON structure returned by Claude's SQL-generation step."""
+    """Validate the JSON structure returned by the LLM's SQL-generation step."""
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -572,14 +572,14 @@ def validate_quantitative_interpretation(
     is_truncated: bool = False,
 ) -> ValidationResult:
     """
-    Validate Claude's interpretation of SQL results.
+    Validate the LLM's interpretation of SQL results.
 
     Numeric consistency check
     -------------------------
     Numbers mentioned in the interpretation are extracted and compared
     against values in result_rows.  Numbers that do not match any result
     cell (within 2 % tolerance) are reported as warnings, not errors —
-    because Claude may legitimately derive or round values.
+    because the LLM may legitimately derive or round values.
 
     IMPORTANT: A clean numeric check does NOT prove the full explanation
     is correct.  It only confirms that the specific numbers mentioned
@@ -622,7 +622,7 @@ def validate_quantitative_interpretation(
         warnings.append("refused=true but 'interpretation' is non-empty")
 
     # The structured-claims schema (numeric_claims key) is required.
-    # Its absence is a hard error so Claude cannot bypass structured validation.
+    # Its absence is a hard error so the LLM cannot bypass structured validation.
     if "numeric_claims" not in payload:
         errors.append(
             "Missing required field 'numeric_claims'. "

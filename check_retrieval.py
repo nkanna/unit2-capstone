@@ -1,5 +1,5 @@
 """
-check_retrieval.py — verify ChromaDB retrieval WITHOUT calling Claude.
+check_retrieval.py — verify ChromaDB retrieval WITHOUT calling Gemini.
 
 Shows the top-3 chunks and cosine distances for:
   Q1  (security)        — supported question
@@ -55,7 +55,7 @@ def main():
             print(f"           preview: {preview!r}")
 
     print("\n" + "=" * 72)
-    print("Retrieval check complete. No Claude calls were made.")
+    print("Retrieval check complete. No Gemini calls were made.")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,17 @@
+# Current provider amendment (2026-10-08)
+
+The instructor changed the LLM provider to Google Gemini. All LLM requests use
+`llm_client.invoke()` and the OpenAI Python SDK against
+`https://generativelanguage.googleapis.com/v1beta/openai/`.
+Read `GEMINI_API_KEY` and `GEMINI_MODEL` using dotenv. Default:
+`gemini-3.6-flash`; quota fallback: `gemini-3.5-flash-lite`.
+Preserve the application, validations, retrieval and conversation history.
+Keep prior Bedrock evidence as historical, with new Gemini logs separate.
+The original brief below is retained as historical context. Its Claude/Bedrock
+provider instructions are superseded by this amendment.
+
+---
+
 # Unit 2 Capstone: Multi-Agent RAG System with Claude
 
 ## Goal

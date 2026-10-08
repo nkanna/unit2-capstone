@@ -1,6 +1,6 @@
 """
 Live evidence run v2 — combined + follow-up queries after code-fence fix.
-Saves evidence to evidence/run_live_checks_v2/.
+Saves new Gemini evidence to evidence/gemini/run_live_checks_v2/.
 """
 import json
 import sys
@@ -9,11 +9,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import bedrock_client as bc
+import llm_client as lc
 from agents.manager import Manager
+from tokenomics.logger import sum_known
 
-OUT_DIR = Path(__file__).parent
-_original_invoke = bc.invoke
+OUT_DIR = Path(__file__).parent.parent / "gemini" / "run_live_checks_v2"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+_original_invoke = lc.invoke
 _live_calls: list[dict] = []
 
 
@@ -26,13 +28,20 @@ def _capturing_invoke(messages, system, max_tokens, temperature=0.0):
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "text": resp.text,
         "stop_reason": resp.stop_reason,
+        "provider_finish_reason": resp.provider_finish_reason,
+        "provider": resp.provider,
+        "model": resp.model,
+        "usage_metadata": resp.usage_metadata,
+        "total_tokens": resp.total_tokens,
+        "response_issue": resp.response_issue,
+        "attempts": resp.attempts,
         "input_tokens": resp.input_tokens,
         "output_tokens": resp.output_tokens,
     })
     return resp
 
 
-bc.invoke = _capturing_invoke
+lc.invoke = _capturing_invoke
 
 manager = Manager()
 
@@ -77,8 +86,10 @@ for label, query in queries:
         call["call_purpose"] = (
             cr.call_purpose if cr and hasattr(cr, "call_purpose") else "unknown"
         )
+        call["free_tier_estimated_cost_usd"] = cr.free_tier_estimated_cost_usd if cr else None
+        call["hypothetical_paid_tier_cost_usd"] = cr.hypothetical_paid_tier_cost_usd if cr else None
         call["estimated_cost_usd"] = (
-            cr.estimated_cost_usd if cr and hasattr(cr, "estimated_cost_usd") else 0.0
+            cr.estimated_cost_usd if cr and hasattr(cr, "estimated_cost_usd") else None
         )
 
     qr: dict = {
@@ -114,9 +125,11 @@ for label, query in queries:
         ),
         "history_before": history_before,
         "history_after": history_after,
-        "total_input_tokens": sum(r.input_tokens for r in result.call_records),
-        "total_output_tokens": sum(r.output_tokens for r in result.call_records),
-        "total_cost_usd": sum(r.estimated_cost_usd for r in result.call_records),
+        "total_input_tokens": sum_known(r.input_tokens for r in result.call_records),
+        "total_output_tokens": sum_known(r.output_tokens for r in result.call_records),
+        "total_hypothetical_paid_tier_cost_usd": sum_known(r.hypothetical_paid_tier_cost_usd for r in result.call_records),
+        "total_free_tier_estimated_cost_usd": sum_known(r.free_tier_estimated_cost_usd for r in result.call_records),
+        "total_cost_usd": sum_known(r.estimated_cost_usd for r in result.call_records),
     }
     query_results.append(qr)
 
@@ -138,10 +151,10 @@ for label, query in queries:
     print(f"Validation: valid={result.validation.valid} "
           f"errors={result.validation.errors[:2]} "
           f"warnings={result.validation.warnings[:2]}")
-    cost = sum(r.estimated_cost_usd for r in result.call_records)
-    tokens_in = sum(r.input_tokens for r in result.call_records)
-    tokens_out = sum(r.output_tokens for r in result.call_records)
-    print(f"Tokens: {tokens_in} in / {tokens_out} out | Cost: ${cost:.6f}")
+    cost = sum_known(r.estimated_cost_usd for r in result.call_records)
+    tokens_in = sum_known(r.input_tokens for r in result.call_records)
+    tokens_out = sum_known(r.output_tokens for r in result.call_records)
+    print(f"Tokens: {tokens_in} in / {tokens_out} out | Billing-tier estimate: {cost} USD")
     print(f"Query ID: {result.query_id}")
 
 # Write evidence

@@ -1,0 +1,2 @@
+{"query_label": "Q1_both", "user_query": "What does the employee satisfaction policy say about manager accountability, and what is the average satisfaction score by department?", "error": "Gemini request failed (APITimeoutError); 1 attempt(s)."}
+{"query_label": "Q2_followup", "user_query": "Which department scored lowest, and what does the policy recommend for managers in that department?", "error": "Gemini request failed (HTTP 503); 3 attempt(s)."}

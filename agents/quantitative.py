@@ -1,6 +1,6 @@
 """
 Quantitative agent — translates natural-language questions into SQLite SQL,
-executes them safely, and interprets the results using Claude via Bedrock.
+executes them safely, and interprets the results using Gemini.
 
 Safety layers
 -------------
@@ -14,7 +14,7 @@ Safety layers
                            surfaced explicitly in the interpretation prompt.
 5.  Execution timeout      Connection-level timeout; interrupts runaway queries.
 
-Two Claude calls per question
+Two the LLM calls per question
 -----------------------------
 Call 1 (sql_generation)    Generates a SELECT statement from the question and schema.
 Call 2 (quantitative_interpretation) Interprets the query results in plain language.
@@ -39,7 +39,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-import bedrock_client as bc
+import llm_client as lc
 from tokenomics.logger import CallRecord, log_call, log_query_summary
 from utils import parse_json_object
 from validation.validator import (
@@ -78,7 +78,7 @@ DB_PATH = Path(os.getenv("DB_PATH", "data/database.sqlite"))
 MAX_RESULT_ROWS = int(os.getenv("MAX_RESULT_ROWS", "100"))
 MAX_RETRIES = 2       # maximum interpretation calls per question
 
-# ── Schema context fed to Claude ──────────────────────────────────────────────
+# ── Schema context fed to the LLM ──────────────────────────────────────────────
 SCHEMA_CONTEXT = """\
 DATABASE SCHEMA (SQLite, fictional Acme Corp data)
 ===================================================
@@ -251,9 +251,9 @@ def _format_results_for_prompt(
     rows: list[dict],
     truncated: bool,
 ) -> str:
-    """Render query results as a compact text block for Claude.
+    """Render query results as a compact text block for the LLM.
 
-    Each row is shown as 'Row N: {col: val, ...}' so Claude can reference
+    Each row is shown as 'Row N: {col: val, ...}' so the LLM can reference
     row_index values precisely in its numeric_claims.
     """
     if not rows:
@@ -343,10 +343,10 @@ class QuantitativeAgent:
             {"role": "user", "content": f"Question: {query}"}
         ]
 
-        sql_resp = bc.invoke(
+        sql_resp = lc.invoke(
             messages=sql_messages,
             system=SQL_GENERATION_SYSTEM,
-            max_tokens=512,
+            max_tokens=4096,  # Gemini budget includes thinking and answer tokens
             temperature=0.0,
         )
 
@@ -455,10 +455,10 @@ class QuantitativeAgent:
 
         for attempt in range(1, MAX_RETRIES + 1):
             attempts = attempt
-            interp_resp = bc.invoke(
+            interp_resp = lc.invoke(
                 messages=interp_messages,
                 system=INTERPRETATION_SYSTEM,
-                max_tokens=1024,
+                max_tokens=8192,  # preserve room for JSON after thinking
                 temperature=0.0,
             )
 

@@ -1,6 +1,6 @@
 """
 Qualitative agent — retrieves relevant document chunks from ChromaDB and
-generates a grounded, cited answer using Claude via AWS Bedrock.
+generates a grounded, cited answer using Gemini.
 
 Key design decisions
 --------------------
@@ -12,15 +12,15 @@ Retrieval pre-filter
     queries without accidentally blocking borderline supported ones.
 
     IMPORTANT: A low distance score does not prove the chunk answers the
-    question.  Claude determines actual relevance by reading the chunk text.
-    The 'refused' field in the output reflects Claude's judgment, not the
+    question.  the LLM determines actual relevance by reading the chunk text.
+    The 'refused' field in the output reflects the LLM's judgment, not the
     distance score.
 
 Prompt injection prevention
     Retrieved chunks are wrapped in <retrieved_context> XML tags and the
-    system prompt explicitly instructs Claude to treat the content as data,
+    system prompt explicitly instructs the LLM to treat the content as data,
     not instructions.  This limits (but does not eliminate) the risk of a
-    malicious document influencing Claude's behavior.
+    malicious document influencing the LLM's behavior.
 
 Citation limitation (documented by design)
     The validator checks that cited chunk_ids exist in the retrieved set.
@@ -31,7 +31,7 @@ Citation limitation (documented by design)
 
 Retries
     On validation failure, one retry is attempted with the error appended
-    to the conversation.  Maximum 2 total Claude calls per question.
+    to the conversation.  Maximum 2 total the LLM calls per question.
     Every call is logged to tokenomics regardless of outcome.
 """
 
@@ -45,7 +45,7 @@ from utils import parse_json_object
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from dotenv import load_dotenv
 
-import bedrock_client as bc
+import llm_client as lc
 from tokenomics.logger import CallRecord, log_call, log_query_summary
 from validation.validator import ValidationResult, validate_qualitative_response
 
@@ -58,9 +58,9 @@ EMBED_MODEL = "all-MiniLM-L6-v2"
 
 TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "4"))
 # Pre-filter: queries where ALL top-k chunks exceed this distance are refused
-# without calling Claude.  Not a content-relevance gate — see module docstring.
+# without calling the LLM.  Not a content-relevance gate — see module docstring.
 RETRIEVAL_THRESHOLD = float(os.getenv("RETRIEVAL_THRESHOLD", "0.70"))
-MAX_RETRIES = 2   # maximum total Claude calls per question
+MAX_RETRIES = 2   # maximum total the LLM calls per question
 
 SYSTEM_PROMPT = """\
 You are a helpful enterprise knowledge assistant.
@@ -106,7 +106,7 @@ class QualitativeResult:
     refusal_reason: str | None
     retrieved_chunks: list[dict]   # raw evidence for human review
     validation: ValidationResult
-    attempts: int                  # actual Claude calls made
+    attempts: int                  # actual the LLM calls made
     call_records: list[CallRecord] = field(default_factory=list)
 
 
@@ -163,7 +163,7 @@ class QualitativeAgent:
 
     @staticmethod
     def _build_context_block(chunks: list[dict]) -> str:
-        """Render retrieved chunks into the XML context block sent to Claude."""
+        """Render retrieved chunks into the XML context block sent to the LLM."""
         lines = ["<retrieved_context>"]
         for i, c in enumerate(chunks, 1):
             lines.append(f"[CHUNK {i}: {c['id']}]")
@@ -194,7 +194,7 @@ class QualitativeAgent:
 
         # ── Step 2: Pre-filter ───────────────────────────────────────────────
         if min_distance > RETRIEVAL_THRESHOLD:
-            # All chunks are too dissimilar — refuse without calling Claude
+            # All chunks are too dissimilar — refuse without calling the LLM
             return QualitativeResult(
                 answer="",
                 citations=[],
@@ -205,7 +205,7 @@ class QualitativeAgent:
                 ),
                 retrieved_chunks=chunks,
                 validation=ValidationResult(valid=True, warnings=[
-                    "Refused by pre-filter — no Claude call made"
+                    "Refused by pre-filter — no the LLM call made"
                 ]),
                 attempts=0,
                 call_records=[],
@@ -222,7 +222,7 @@ class QualitativeAgent:
             "content": f"Question: {query}\n\n{context_block}",
         })
 
-        # ── Step 4: Call Claude (with retry on validation failure) ────────────
+        # ── Step 4: Call the LLM (with retry on validation failure) ────────────
         call_records: list[CallRecord] = []
         attempts = 0
         last_validation = ValidationResult(valid=False, errors=["No attempt yet"])
@@ -230,10 +230,10 @@ class QualitativeAgent:
 
         for attempt in range(1, MAX_RETRIES + 1):
             attempts = attempt
-            response = bc.invoke(
+            response = lc.invoke(
                 messages=messages,
                 system=SYSTEM_PROMPT,
-                max_tokens=1024,
+                max_tokens=8192,  # Gemini budget includes thinking and answer tokens
                 temperature=0.0,
             )
 
@@ -268,7 +268,7 @@ class QualitativeAgent:
                 log_call(
                     query_id=query_id,
                     call_purpose="qualitative_generation",
-                    bedrock_response=response,
+                    response=response,
                     validation_outcome=validation_outcome,
                 )
             )

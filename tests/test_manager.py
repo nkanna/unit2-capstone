@@ -1,7 +1,7 @@
 """
 Offline unit tests for agents/manager.py.
 
-All tests use mocking — no Bedrock calls, no ChromaDB, no SQLite.
+All tests use mocking — no Gemini calls, no ChromaDB, no SQLite.
 Every assertion tests real code paths; nothing is fabricated.
 """
 
@@ -18,7 +18,7 @@ from validation.validator import ValidationResult
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 @dataclass
-class _FakeBR:
+class _FakeLLMResponse:
     text: str
     input_tokens: int = 40
     output_tokens: int = 50
@@ -130,8 +130,8 @@ class TestManagerRouting:
         qual_result = _make_qual_result()
         mgr._qual_agent.answer.return_value = qual_result
 
-        mocker.patch("agents.manager.bc.invoke",
-                     return_value=_FakeBR(text=_class_json(route="qualitative")))
+        mocker.patch("agents.manager.lc.invoke",
+                     return_value=_FakeLLMResponse(text=_class_json(route="qualitative")))
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
         mocker.patch("agents.manager.log_query_summary")
         mocker.patch("agents.manager.new_query_id", return_value="test-qid-1")
@@ -150,8 +150,8 @@ class TestManagerRouting:
         mgr._quant_agent.answer.return_value = quant_result
 
         mocker.patch(
-            "agents.manager.bc.invoke",
-            return_value=_FakeBR(text=_class_json(
+            "agents.manager.lc.invoke",
+            return_value=_FakeLLMResponse(text=_class_json(
                 route="quantitative",
                 qual_sub=None,
                 quant_sub="What was total revenue?",
@@ -175,16 +175,16 @@ class TestManagerRouting:
         mgr._quant_agent.answer.return_value = _make_quant_result()
 
         mock_invoke = mocker.patch(
-            "agents.manager.bc.invoke",
+            "agents.manager.lc.invoke",
             side_effect=[
                 # 1st call: classification → both
-                _FakeBR(text=_class_json(
+                _FakeLLMResponse(text=_class_json(
                     route="both",
                     qual_sub="Remote work policy?",
                     quant_sub="How many remote employees?",
                 )),
                 # 2nd call: synthesis
-                _FakeBR(text=_synth_json("According to policy... The data shows...")),
+                _FakeLLMResponse(text=_synth_json("According to policy... The data shows...")),
             ],
         )
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
@@ -203,8 +203,8 @@ class TestManagerRouting:
         mgr = _make_manager(mocker)
 
         mocker.patch(
-            "agents.manager.bc.invoke",
-            return_value=_FakeBR(text=_class_json(
+            "agents.manager.lc.invoke",
+            return_value=_FakeLLMResponse(text=_class_json(
                 route="unsupported", qual_sub=None, quant_sub=None,
                 reasoning="general world knowledge",
             )),
@@ -231,8 +231,8 @@ class TestManagerHistory:
         mgr._qual_agent.answer.return_value = _make_qual_result()
 
         mocker.patch(
-            "agents.manager.bc.invoke",
-            return_value=_FakeBR(text=_class_json(route="qualitative")),
+            "agents.manager.lc.invoke",
+            return_value=_FakeLLMResponse(text=_class_json(route="qualitative")),
         )
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
         mocker.patch("agents.manager.log_query_summary")
@@ -242,8 +242,8 @@ class TestManagerHistory:
         assert len(mgr._history) == 1
 
         mocker.patch(
-            "agents.manager.bc.invoke",
-            return_value=_FakeBR(text=_class_json(route="qualitative")),
+            "agents.manager.lc.invoke",
+            return_value=_FakeLLMResponse(text=_class_json(route="qualitative")),
         )
         mocker.patch("agents.manager.new_query_id", return_value="test-qid-6")
         mgr.answer("Follow-up question?")
@@ -255,8 +255,8 @@ class TestManagerHistory:
         mgr._qual_agent.answer.return_value = _make_qual_result()
 
         mocker.patch(
-            "agents.manager.bc.invoke",
-            return_value=_FakeBR(text=_class_json(route="qualitative")),
+            "agents.manager.lc.invoke",
+            return_value=_FakeLLMResponse(text=_class_json(route="qualitative")),
         )
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
         mocker.patch("agents.manager.log_query_summary")
@@ -290,8 +290,8 @@ class TestManagerErrorHandling:
         mgr = _make_manager(mocker)
 
         mocker.patch(
-            "agents.manager.bc.invoke",
-            return_value=_FakeBR(text="not json }{"),
+            "agents.manager.lc.invoke",
+            return_value=_FakeLLMResponse(text="not json }{"),
         )
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
         mocker.patch("agents.manager.log_query_summary")
@@ -315,8 +315,8 @@ class TestManagerErrorHandling:
             "reasoning": "test",
         })
         mocker.patch(
-            "agents.manager.bc.invoke",
-            return_value=_FakeBR(text=bad_class),
+            "agents.manager.lc.invoke",
+            return_value=_FakeLLMResponse(text=bad_class),
         )
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
         mocker.patch("agents.manager.log_query_summary")
@@ -332,8 +332,8 @@ class TestManagerErrorHandling:
         mgr._qual_agent.answer.return_value = _make_qual_result()
 
         mocker.patch(
-            "agents.manager.bc.invoke",
-            return_value=_FakeBR(text=_class_json(route="qualitative")),
+            "agents.manager.lc.invoke",
+            return_value=_FakeLLMResponse(text=_class_json(route="qualitative")),
         )
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
         mocker.patch("agents.manager.log_query_summary")
@@ -348,8 +348,8 @@ class TestManagerErrorHandling:
         mgr._qual_agent.answer.return_value = _make_qual_result()
 
         mocker.patch(
-            "agents.manager.bc.invoke",
-            return_value=_FakeBR(text=_class_json(route="qualitative")),
+            "agents.manager.lc.invoke",
+            return_value=_FakeLLMResponse(text=_class_json(route="qualitative")),
         )
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
         mock_summary = mocker.patch("agents.manager.log_query_summary")
@@ -462,18 +462,18 @@ class TestSynthesisGrounding:
         mgr._quant_agent.answer.return_value = quant
 
         mock_invoke = mocker.patch(
-            "agents.manager.bc.invoke",
+            "agents.manager.lc.invoke",
             side_effect=[
                 # classification → both
-                _FakeBR(text=_class_json(
+                _FakeLLMResponse(text=_class_json(
                     route="both",
                     qual_sub="Policy?",
                     quant_sub="Data?",
                 )),
                 # synthesis attempt 1: fabricated number not in result_rows
-                _FakeBR(text='{"synthesis": "Revenue was $99999.", "refused": false, "refusal_reason": null}'),
+                _FakeLLMResponse(text='{"synthesis": "Revenue was $99999.", "refused": false, "refusal_reason": null}'),
                 # synthesis attempt 2: grounded number
-                _FakeBR(text='{"synthesis": "Revenue was $5000.", "refused": false, "refusal_reason": null}'),
+                _FakeLLMResponse(text='{"synthesis": "Revenue was $5000.", "refused": false, "refusal_reason": null}'),
             ],
         )
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
@@ -482,7 +482,7 @@ class TestSynthesisGrounding:
 
         result = mgr.answer("Combined question?")
 
-        # bc.invoke called 3 times: 1 classification + 2 synthesis
+        # lc.invoke called 3 times: 1 classification + 2 synthesis
         assert mock_invoke.call_count == 3, (
             f"Expected 3 invoke calls (1 classify + 2 synthesis), got {mock_invoke.call_count}"
         )
@@ -499,17 +499,17 @@ class TestSynthesisGrounding:
         mgr._quant_agent.answer.return_value = quant
 
         mocker.patch(
-            "agents.manager.bc.invoke",
+            "agents.manager.lc.invoke",
             side_effect=[
-                _FakeBR(text=_class_json(
+                _FakeLLMResponse(text=_class_json(
                     route="both",
                     qual_sub="Policy?",
                     quant_sub="Data?",
                 )),
                 # synthesis attempt 1: fabricated
-                _FakeBR(text='{"synthesis": "Revenue was $99999.", "refused": false, "refusal_reason": null}'),
+                _FakeLLMResponse(text='{"synthesis": "Revenue was $99999.", "refused": false, "refusal_reason": null}'),
                 # synthesis attempt 2: still fabricated
-                _FakeBR(text='{"synthesis": "Revenue was $77777.", "refused": false, "refusal_reason": null}'),
+                _FakeLLMResponse(text='{"synthesis": "Revenue was $77777.", "refused": false, "refusal_reason": null}'),
             ],
         )
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
@@ -537,8 +537,8 @@ class TestRefusalPropagation:
         refused_qual = _make_qual_result(refused=True)
         mgr._qual_agent.answer.return_value = refused_qual
 
-        mocker.patch("agents.manager.bc.invoke",
-                     return_value=_FakeBR(text=_class_json(route="qualitative")))
+        mocker.patch("agents.manager.lc.invoke",
+                     return_value=_FakeLLMResponse(text=_class_json(route="qualitative")))
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
         mocker.patch("agents.manager.log_query_summary")
         mocker.patch("agents.manager.new_query_id", return_value="ref-qid-1")
@@ -555,8 +555,8 @@ class TestRefusalPropagation:
         refused_qual = _make_qual_result(refused=True)
         good_qual = _make_qual_result(answer="Real policy answer.")
 
-        mocker.patch("agents.manager.bc.invoke",
-                     return_value=_FakeBR(text=_class_json(route="qualitative")))
+        mocker.patch("agents.manager.lc.invoke",
+                     return_value=_FakeLLMResponse(text=_class_json(route="qualitative")))
         mocker.patch("agents.manager.log_call", return_value=MagicMock())
         mocker.patch("agents.manager.log_query_summary")
         mocker.patch("agents.manager.new_query_id", side_effect=["ref-qid-2", "ref-qid-3"])
@@ -568,8 +568,8 @@ class TestRefusalPropagation:
 
         # Second call: valid
         mgr._qual_agent.answer.return_value = good_qual
-        mocker.patch("agents.manager.bc.invoke",
-                     return_value=_FakeBR(text=_class_json(route="qualitative")))
+        mocker.patch("agents.manager.lc.invoke",
+                     return_value=_FakeLLMResponse(text=_class_json(route="qualitative")))
         mgr.answer("Good question?")
         assert len(mgr._history) == 1, "Valid turn should be in history"
         msgs = mgr._history.to_messages()
@@ -585,15 +585,15 @@ class TestSynthesisRefusalPropagation:
         mgr._quant_agent.answer.return_value = _make_quant_result()
 
         mocker.patch(
-            "agents.manager.bc.invoke",
+            "agents.manager.lc.invoke",
             side_effect=[
-                _FakeBR(text=_class_json(route="both", qual_sub="Policy?", quant_sub="Data?")),
+                _FakeLLMResponse(text=_class_json(route="both", qual_sub="Policy?", quant_sub="Data?")),
                 # synthesis attempt 1: refused=True, empty synthesis
-                _FakeBR(text=json.dumps({
+                _FakeLLMResponse(text=json.dumps({
                     "synthesis": "", "refused": True, "refusal_reason": "Cannot combine."
                 })),
                 # synthesis attempt 2: also refused
-                _FakeBR(text=json.dumps({
+                _FakeLLMResponse(text=json.dumps({
                     "synthesis": "", "refused": True, "refusal_reason": "Still cannot combine."
                 })),
             ],
@@ -618,13 +618,13 @@ class TestSynthesisRefusalPropagation:
         mgr._quant_agent.answer.return_value = _make_quant_result()
 
         mocker.patch(
-            "agents.manager.bc.invoke",
+            "agents.manager.lc.invoke",
             side_effect=[
-                _FakeBR(text=_class_json(route="both", qual_sub="Policy?", quant_sub="Data?")),
-                _FakeBR(text=json.dumps({
+                _FakeLLMResponse(text=_class_json(route="both", qual_sub="Policy?", quant_sub="Data?")),
+                _FakeLLMResponse(text=json.dumps({
                     "synthesis": "", "refused": True, "refusal_reason": "Cannot combine."
                 })),
-                _FakeBR(text=json.dumps({
+                _FakeLLMResponse(text=json.dumps({
                     "synthesis": "", "refused": True, "refusal_reason": "Still cannot."
                 })),
             ],
@@ -656,21 +656,21 @@ class TestSynthesisHistoryGuard:
         mgr._quant_agent.answer.return_value = _make_quant_result()
 
         mocker.patch(
-            "agents.manager.bc.invoke",
+            "agents.manager.lc.invoke",
             side_effect=[
                 # classification → both
-                _FakeBR(text=_class_json(
+                _FakeLLMResponse(text=_class_json(
                     route="both",
                     qual_sub="Policy question",
                     quant_sub="Data question",
                 )),
                 # synthesis attempt 1 — truncated (fails validation)
-                _FakeBR(
+                _FakeLLMResponse(
                     text='{"synthesis": "Combined.", "refused": false, "refusal_reason": null}',
                     stop_reason="max_tokens",
                 ),
                 # synthesis attempt 2 — also truncated (fails validation)
-                _FakeBR(
+                _FakeLLMResponse(
                     text='{"synthesis": "Combined again.", "refused": false, "refusal_reason": null}',
                     stop_reason="max_tokens",
                 ),

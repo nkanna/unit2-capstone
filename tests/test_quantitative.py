@@ -2,7 +2,7 @@
 Offline unit tests for agents/quantitative.py and the quantitative
 portions of validation/validator.py.
 
-All tests use mocks or in-memory SQLite — no Bedrock calls, no production DB.
+All tests use mocks or in-memory SQLite — no Gemini calls, no production DB.
 Every assertion tests actual code behavior; nothing is fabricated.
 """
 
@@ -37,7 +37,7 @@ from validation.validator import (
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 @dataclass
-class _FakeBR:
+class _FakeLLMResponse:
     text: str
     input_tokens: int = 50
     output_tokens: int = 60
@@ -415,10 +415,10 @@ class TestQuantitativeAgentFlow:
 
         sql = "SELECT ROUND(SUM(amount),2) AS total FROM sales"
         mock_invoke = mocker.patch(
-            "agents.quantitative.bc.invoke",
+            "agents.quantitative.lc.invoke",
             side_effect=[
-                _FakeBR(text=_sql_json(sql)),
-                _FakeBR(text=_interp_json("Total revenue was $5,200.0.")),
+                _FakeLLMResponse(text=_sql_json(sql)),
+                _FakeLLMResponse(text=_interp_json("Total revenue was $5,200.0.")),
             ],
         )
         mocker.patch("agents.quantitative.log_call", return_value=MagicMock())
@@ -432,12 +432,12 @@ class TestQuantitativeAgentFlow:
         assert result.validation.valid
 
     def test_malformed_sql_generation_response(self, seed_db, mocker):
-        """Claude returns unparseable JSON for SQL generation → refused."""
+        """the LLM returns unparseable JSON for SQL generation → refused."""
         agent = self._agent(seed_db)
 
         mocker.patch(
-            "agents.quantitative.bc.invoke",
-            return_value=_FakeBR(text="not json }{"),
+            "agents.quantitative.lc.invoke",
+            return_value=_FakeLLMResponse(text="not json }{"),
         )
         mocker.patch("agents.quantitative.log_call", return_value=MagicMock())
 
@@ -447,14 +447,14 @@ class TestQuantitativeAgentFlow:
         assert "parse error" in result.refusal_reason.lower()
 
     def test_blocked_sql_generation(self, seed_db, mocker):
-        """Claude generates a DELETE statement for a read query → blocked by validate_sql."""
+        """the LLM generates a DELETE statement for a read query → blocked by validate_sql."""
         agent = self._agent(seed_db)
 
         # Use a read-intent query so DESTRUCTIVE_INTENT_RE doesn't fire;
-        # we're testing that validate_sql blocks a DELETE that Claude unexpectedly produced.
+        # we're testing that validate_sql blocks a DELETE that the LLM unexpectedly produced.
         mocker.patch(
-            "agents.quantitative.bc.invoke",
-            return_value=_FakeBR(
+            "agents.quantitative.lc.invoke",
+            return_value=_FakeLLMResponse(
                 text=_sql_json("DELETE FROM customers WHERE id = 1")
             ),
         )
@@ -470,8 +470,8 @@ class TestQuantitativeAgentFlow:
         agent = self._agent(seed_db)
 
         mocker.patch(
-            "agents.quantitative.bc.invoke",
-            return_value=_FakeBR(
+            "agents.quantitative.lc.invoke",
+            return_value=_FakeLLMResponse(
                 text=_sql_json("SELECT * FROM secret_data")
             ),
         )
@@ -486,8 +486,8 @@ class TestQuantitativeAgentFlow:
         agent = self._agent(seed_db)
 
         mocker.patch(
-            "agents.quantitative.bc.invoke",
-            return_value=_FakeBR(
+            "agents.quantitative.lc.invoke",
+            return_value=_FakeLLMResponse(
                 text=_sql_json("SELECT COUNT(*) FROM customers")
             ),
         )
@@ -508,10 +508,10 @@ class TestQuantitativeAgentFlow:
 
         sql = "SELECT * FROM customers WHERE status = 'churned' AND region = 'EMEA'"
         mocker.patch(
-            "agents.quantitative.bc.invoke",
+            "agents.quantitative.lc.invoke",
             side_effect=[
-                _FakeBR(text=_sql_json(sql)),
-                _FakeBR(text=_interp_json(
+                _FakeLLMResponse(text=_sql_json(sql)),
+                _FakeLLMResponse(text=_interp_json(
                     "No churned customers were found in the EMEA region."
                 )),
             ],
@@ -529,15 +529,15 @@ class TestQuantitativeAgentFlow:
 
         sql = "SELECT * FROM customers WHERE status = 'terminated'"
         mocker.patch(
-            "agents.quantitative.bc.invoke",
+            "agents.quantitative.lc.invoke",
             side_effect=[
-                _FakeBR(text=_sql_json(sql)),
+                _FakeLLMResponse(text=_sql_json(sql)),
                 # First attempt: fabricates a number for empty results
-                _FakeBR(text=_interp_json(
+                _FakeLLMResponse(text=_interp_json(
                     "There were 42 terminated customers generating $100,000."
                 )),
                 # Second attempt (retry): still wrong
-                _FakeBR(text=_interp_json(
+                _FakeLLMResponse(text=_interp_json(
                     "The data shows 15 terminated customers."
                 )),
             ],
@@ -555,11 +555,11 @@ class TestQuantitativeAgentFlow:
 
         sql = "SELECT ROUND(SUM(amount),2) AS total FROM sales"
         mocker.patch(
-            "agents.quantitative.bc.invoke",
+            "agents.quantitative.lc.invoke",
             side_effect=[
-                _FakeBR(text=_sql_json(sql)),
-                _FakeBR(text="INVALID JSON }{"),  # first interpretation attempt
-                _FakeBR(text=_interp_json("Total was $5,200.0.")),  # retry succeeds
+                _FakeLLMResponse(text=_sql_json(sql)),
+                _FakeLLMResponse(text="INVALID JSON }{"),  # first interpretation attempt
+                _FakeLLMResponse(text=_interp_json("Total was $5,200.0.")),  # retry succeeds
             ],
         )
         mocker.patch("agents.quantitative.log_call", return_value=MagicMock())
@@ -575,11 +575,11 @@ class TestQuantitativeAgentFlow:
 
         sql = "SELECT ROUND(SUM(amount),2) AS total FROM sales"
         mocker.patch(
-            "agents.quantitative.bc.invoke",
+            "agents.quantitative.lc.invoke",
             side_effect=[
-                _FakeBR(text=_sql_json(sql)),
-                _FakeBR(text="BAD JSON }{"),
-                _FakeBR(text="STILL BAD }{"),
+                _FakeLLMResponse(text=_sql_json(sql)),
+                _FakeLLMResponse(text="BAD JSON }{"),
+                _FakeLLMResponse(text="STILL BAD }{"),
             ],
         )
         mocker.patch("agents.quantitative.log_call", return_value=MagicMock())
@@ -594,8 +594,8 @@ class TestQuantitativeAgentFlow:
         agent = self._agent(seed_db)
 
         mocker.patch(
-            "agents.quantitative.bc.invoke",
-            return_value=_FakeBR(
+            "agents.quantitative.lc.invoke",
+            return_value=_FakeLLMResponse(
                 text=_sql_json("SELECT COUNT(*) FROM customers"),
                 stop_reason="max_tokens",
             ),
@@ -607,12 +607,12 @@ class TestQuantitativeAgentFlow:
         assert result.refused
 
     def test_multiple_statements_blocked(self, seed_db, mocker):
-        """Claude generates two statements → blocked."""
+        """the LLM generates two statements → blocked."""
         agent = self._agent(seed_db)
 
         mocker.patch(
-            "agents.quantitative.bc.invoke",
-            return_value=_FakeBR(
+            "agents.quantitative.lc.invoke",
+            return_value=_FakeLLMResponse(
                 text=_sql_json("SELECT COUNT(*) FROM customers; DROP TABLE customers")
             ),
         )
@@ -626,7 +626,7 @@ class TestQuantitativeAgentFlow:
     def test_destructive_intent_refused_before_bedrock(self, seed_db, mocker):
         """Destructive intent detected in query → refused before any Bedrock call."""
         agent = self._agent(seed_db)
-        mock_invoke = mocker.patch("agents.quantitative.bc.invoke")
+        mock_invoke = mocker.patch("agents.quantitative.lc.invoke")
 
         result = agent.answer("Delete all customers from the database", "qid-012")
 

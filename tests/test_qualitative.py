@@ -1,7 +1,7 @@
 """
 Offline unit tests for agents/qualitative.py.
 
-All tests use mocking — no Bedrock calls, no ChromaDB access.
+All tests use mocking — no Gemini calls, no ChromaDB access.
 Every assertion tests real code paths, not fabricated outputs.
 """
 
@@ -12,12 +12,14 @@ from dataclasses import dataclass
 
 from agents.qualitative import QualitativeAgent, QualitativeResult
 from validation.validator import ValidationResult
+from llm_client import LLMResponse
+import tokenomics.logger as tokenomics_logger
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 @dataclass
-class _FakeBedrockResponse:
+class _FakeLLMResponse:
     text: str
     input_tokens: int = 100
     output_tokens: int = 80
@@ -69,17 +71,60 @@ class TestQualitativeAgentUnit:
         agent._retrieve = MagicMock(return_value=chunks)
         return agent
 
+    @pytest.mark.parametrize('retry_after_truncation', [False, True])
+    def test_real_logger_records_valid_answer_and_retry(self, monkeypatch, tmp_path,
+                                                       retry_after_truncation):
+        """Run the real agent/logger boundary; mock only retrieval and the LLM."""
+        agent = self._agent_with_mock_retrieve(_make_chunks([0.25]))
+        path = tmp_path / 'gemini_calls.jsonl'
+        monkeypatch.setattr(tokenomics_logger, 'LOG_PATH', path)
+        monkeypatch.setenv('GEMINI_BILLING_TIER', 'unknown')
+        text = _make_valid_json(chunk_id='security_policy.md::chunk_0')
+        complete = LLMResponse(
+            text=text, input_tokens=11, output_tokens=7, total_tokens=18,
+            stop_reason='end_turn', provider_finish_reason='stop',
+            usage_metadata={'prompt_tokens': 11, 'completion_tokens': 7,
+                            'total_tokens': 18},
+        )
+        responses = []
+        if retry_after_truncation:
+            responses.append(LLMResponse(
+                text=text, input_tokens=11, output_tokens=7, total_tokens=18,
+                stop_reason='max_tokens', provider_finish_reason='length',
+                response_issue='truncated_response',
+            ))
+        responses.append(complete)
+        invoke = MagicMock(side_effect=responses)
+        monkeypatch.setattr('agents.qualitative.lc.invoke', invoke)
+
+        result = agent.answer('What are the password rules?', 'logger-regression')
+
+        assert result.validation.valid and not result.refused
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        assert len(records) == result.attempts == len(responses)
+        assert len(result.call_records) == len(records)
+        assert all(r['query_id'] == 'logger-regression' for r in records)
+        assert all(r['call_purpose'] == 'qualitative_generation' for r in records)
+        assert all(r['provider'] == 'google_gemini' for r in records)
+        assert records[-1]['validation_outcome'] == 'pass'
+        assert records[-1]['usage_metadata'] == complete.usage_metadata
+        assert records[-1]['total_tokens'] == 18
+        if retry_after_truncation:
+            assert records[0]['validation_outcome'] == 'fail'
+            assert records[0]['response_issue'] == 'truncated_response'
+            assert records[0]['provider_finish_reason'] == 'length'
+
     # ── Happy path ─────────────────────────────────────────────────────────
 
     def test_valid_answer_returned(self, mocker):
-        """Agent returns parsed answer when Claude response is valid."""
+        """Agent returns parsed answer when the LLM response is valid."""
         chunks = _make_chunks([0.25, 0.40, 0.55, 0.60])
         agent = self._agent_with_mock_retrieve(chunks)
 
         valid_json = _make_valid_json(chunk_id="security_policy.md::chunk_0")
-        mock_resp = _FakeBedrockResponse(text=valid_json)
+        mock_resp = _FakeLLMResponse(text=valid_json)
 
-        mocker.patch("agents.qualitative.bc.invoke", return_value=mock_resp)
+        mocker.patch("agents.qualitative.lc.invoke", return_value=mock_resp)
         mocker.patch("agents.qualitative.log_call", return_value=MagicMock())
 
         result = agent.answer("What are the password rules?", "test-qid")
@@ -95,8 +140,8 @@ class TestQualitativeAgentUnit:
         agent = self._agent_with_mock_retrieve(chunks)
 
         valid_json = _make_valid_json(chunk_id="security_policy.md::chunk_0")
-        mocker.patch("agents.qualitative.bc.invoke",
-                     return_value=_FakeBedrockResponse(text=valid_json))
+        mocker.patch("agents.qualitative.lc.invoke",
+                     return_value=_FakeLLMResponse(text=valid_json))
         mocker.patch("agents.qualitative.log_call", return_value=MagicMock())
 
         result = agent.answer("Password policy?", "test-qid")
@@ -106,12 +151,12 @@ class TestQualitativeAgentUnit:
 
     # ── Unsupported question (pre-filter) ──────────────────────────────────
 
-    def test_unsupported_question_refuses_without_calling_claude(self, mocker):
-        """When all distances exceed the threshold, refuse before calling Bedrock."""
+    def test_unsupported_question_refuses_without_calling_llm(self, mocker):
+        """When all distances exceed the threshold, refuse before calling Gemini."""
         chunks = _make_chunks([0.72, 0.80, 0.85, 0.90])
         agent = self._agent_with_mock_retrieve(chunks)
 
-        mock_invoke = mocker.patch("agents.qualitative.bc.invoke")
+        mock_invoke = mocker.patch("agents.qualitative.lc.invoke")
 
         result = agent.answer("What is the coffee machine policy?", "test-qid")
 
@@ -122,7 +167,7 @@ class TestQualitativeAgentUnit:
     # ── Fabricated citation ────────────────────────────────────────────────
 
     def test_fabricated_citation_triggers_retry(self, mocker):
-        """If Claude returns a chunk_id outside the retrieved set, retry."""
+        """If the LLM returns a chunk_id outside the retrieved set, retry."""
         chunks = _make_chunks([0.30, 0.40])
         agent = self._agent_with_mock_retrieve(chunks)
 
@@ -131,10 +176,10 @@ class TestQualitativeAgentUnit:
         good_json = _make_valid_json(chunk_id="security_policy.md::chunk_0")
 
         mocker.patch(
-            "agents.qualitative.bc.invoke",
+            "agents.qualitative.lc.invoke",
             side_effect=[
-                _FakeBedrockResponse(text=bad_json),
-                _FakeBedrockResponse(text=good_json),
+                _FakeLLMResponse(text=bad_json),
+                _FakeLLMResponse(text=good_json),
             ],
         )
         mocker.patch("agents.qualitative.log_call", return_value=MagicMock())
@@ -153,10 +198,10 @@ class TestQualitativeAgentUnit:
         agent = self._agent_with_mock_retrieve(chunks)
 
         mocker.patch(
-            "agents.qualitative.bc.invoke",
+            "agents.qualitative.lc.invoke",
             side_effect=[
-                _FakeBedrockResponse(text="not json at all }{"),
-                _FakeBedrockResponse(text="still broken json }{"),
+                _FakeLLMResponse(text="not json at all }{"),
+                _FakeLLMResponse(text="still broken json }{"),
             ],
         )
         mocker.patch("agents.qualitative.log_call", return_value=MagicMock())
@@ -175,17 +220,17 @@ class TestQualitativeAgentUnit:
         agent = self._agent_with_mock_retrieve(chunks)
 
         # First: truncated; second: valid full response
-        truncated = _FakeBedrockResponse(
+        truncated = _FakeLLMResponse(
             text=_make_valid_json(chunk_id="security_policy.md::chunk_0"),
             stop_reason="max_tokens",
         )
-        complete = _FakeBedrockResponse(
+        complete = _FakeLLMResponse(
             text=_make_valid_json(chunk_id="security_policy.md::chunk_0"),
             stop_reason="end_turn",
         )
 
         mocker.patch(
-            "agents.qualitative.bc.invoke",
+            "agents.qualitative.lc.invoke",
             side_effect=[truncated, complete],
         )
         mocker.patch("agents.qualitative.log_call", return_value=MagicMock())
@@ -195,10 +240,10 @@ class TestQualitativeAgentUnit:
         assert result.attempts == 2
         assert result.validation.valid
 
-    # ── Claude refuses (content-based) ────────────────────────────────────
+    # ── the LLM refuses (content-based) ────────────────────────────────────
 
-    def test_claude_content_refusal_accepted(self, mocker):
-        """Claude may refuse even when chunks pass the distance pre-filter."""
+    def test_llm_content_refusal_accepted(self, mocker):
+        """the LLM may refuse even when chunks pass the distance pre-filter."""
         chunks = _make_chunks([0.56, 0.60])  # below threshold but low relevance
         agent = self._agent_with_mock_retrieve(chunks)
 
@@ -209,8 +254,8 @@ class TestQualitativeAgentUnit:
             "refusal_reason": "The context does not contain vacation policy information.",
         })
         mocker.patch(
-            "agents.qualitative.bc.invoke",
-            return_value=_FakeBedrockResponse(text=refused_json),
+            "agents.qualitative.lc.invoke",
+            return_value=_FakeLLMResponse(text=refused_json),
         )
         mocker.patch("agents.qualitative.log_call", return_value=MagicMock())
 
@@ -229,8 +274,8 @@ class TestQualitativeAgentUnit:
 
         good_json = _make_valid_json(chunk_id="security_policy.md::chunk_0")
         mock_invoke = mocker.patch(
-            "agents.qualitative.bc.invoke",
-            return_value=_FakeBedrockResponse(text=good_json),
+            "agents.qualitative.lc.invoke",
+            return_value=_FakeLLMResponse(text=good_json),
         )
         mocker.patch("agents.qualitative.log_call", return_value=MagicMock())
 
@@ -261,8 +306,8 @@ class TestQualitativeAgentUnit:
             "refusal_reason": "Not in context.",
         })
         mocker.patch(
-            "agents.qualitative.bc.invoke",
-            return_value=_FakeBedrockResponse(text=refused_json),
+            "agents.qualitative.lc.invoke",
+            return_value=_FakeLLMResponse(text=refused_json),
         )
         mocker.patch("agents.qualitative.log_call", return_value=MagicMock())
 

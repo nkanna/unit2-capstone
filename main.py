@@ -71,11 +71,16 @@ def _display(result: ManagerResult) -> None:
     if val.warnings:
         print(f"[Validation warnings: {'; '.join(val.warnings[:3])}]")
 
-    # Tokenomics — use recorded cost from logger (pricing defined in .env / logger.py)
-    total_in = sum(r.input_tokens for r in result.call_records)
-    total_out = sum(r.output_tokens for r in result.call_records)
-    cost = sum(r.estimated_cost_usd for r in result.call_records)
-    print(f"[Tokens: {total_in} in / {total_out} out  Cost: ${cost:.4f}]")
+    # Missing provider usage must remain unknown in CLI totals, too.
+    from tokenomics.logger import sum_known
+    total_in = sum_known(r.input_tokens for r in result.call_records)
+    total_out = sum_known(r.output_tokens for r in result.call_records)
+    paid = sum_known(r.hypothetical_paid_tier_cost_usd for r in result.call_records)
+    free = sum_known(r.free_tier_estimated_cost_usd for r in result.call_records)
+    paid_label = f"${paid:.6f}" if paid is not None else "unknown"
+    free_label = f"${free:.6f}" if free is not None else "unknown"
+    print(f"[Gemini tokens: {total_in} in / {total_out} out]")
+    print(f"[Conditional free-tier estimate: {free_label}; hypothetical paid-tier estimate: {paid_label}]")
     print()
 
 
