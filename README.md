@@ -43,7 +43,7 @@ New accounting defaults to `tokenomics_gemini_log.jsonl`; new evidence goes to
 the preserved ten-query batch and the separate two-query retry.
 See `MIGRATION_REPORT.md` for actual test results and changed files.
 
-## Verified Gemini results and Trust-but-Verify review
+## Trust-but-Verify
 
 Verified from the project author's saved Gemini evidence on 2026-10-08:
 
